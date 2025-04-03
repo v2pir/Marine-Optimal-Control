@@ -1,7 +1,7 @@
 import numpy as np
 from MPPI import model, MPPI
 import matplotlib.pyplot as plt
-from ExtendedKF import EKF
+from LKF import LKF
 from PID import Controller
 from scipy.spatial.transform import Rotation
 
@@ -31,85 +31,82 @@ for _ in range(300):
 
 #---------------------------------Orientation with PID and Kalman Filter-----------------------------------
 
-# seconds
-dt = 0.01
+gyro_noise_std = 0.03  # std deviation for gyro noise
+acc_noise_std = 0.01   # std deviation for accelerometer noise
 
-# drag coefficient specific to water
-drag_coefficient = 0.7
+# Simulation setup
+dt = 0.01  # time step
+drag_coefficient = 0.7  # drag coefficient
 
-# Create Kalman Filter object
-ekf = EKF(dt, drag_coefficient)
+# Create Kalman Filter object with adjusted process noise
+lkf = LKF(dt, drag_coefficient)
 
-# Controller for yaw, pitch, and roll
-cntrl_yaw = Controller(10, 0, 0)
-cntrl_pitch = Controller(10, 0, 0)
-cntrl_roll = Controller(10, 0, 0)
+# initialize PID controller
+cntrl_yaw = Controller(10, 0, 2)
+cntrl_pitch = Controller(10, 0, 2)
+cntrl_roll = Controller(10, 0, 2)
 
-# initial position
-init_orient = np.array([0.0, 0.0, 0.0])
-# setpoint
+# initial and setpoint orientations (yaw, pitch, roll)
+orient = np.array([0.0, 0.0, 0.0])
 setpoint_orient = np.array([37.0, -3.0, 4.0])
 
-# initial gyroscope and accelerometer data (from AHRS)
-gyro_data = [0, 0, 0]
-acc_data = [0, 0, 0]
+# initial sensor data
+gyro_data = np.array([0, 0, 0])
+acc_data = np.array([0, 0, 0])
 
-# position --> for later graphing
+# orientation
 pos_yaw = []
 pos_pitch = []
 pos_roll = []
 
-# simulating over this many timesteps
+# time steps
 numTimeSteps = 4000
 
 for n in range(numTimeSteps):
 
-    Dt_yaw = 500 * drag_coefficient * gyro_data[0]**2 * 0.24 # drag torque
-    Dt_pitch = 500 * drag_coefficient * gyro_data[0]**2 * 0.4 # drag torque
-    Dt_roll = 500 * drag_coefficient * gyro_data[0]**2 * 0.4 # drag torque
+    # simulate drag torques
+    Dt_yaw = 500 * drag_coefficient * gyro_data[0]**2 * 0.24
+    Dt_pitch = 500 * drag_coefficient * gyro_data[1]**2 * 0.4
+    Dt_roll = 500 * drag_coefficient * gyro_data[2]**2 * 0.4
 
-    yaw_torque = cntrl_yaw.output(init_orient[0], setpoint_orient[0])
-    pitch_torque = cntrl_pitch.output(init_orient[1], setpoint_orient[1])
-    roll_torque = cntrl_roll.output(init_orient[2], setpoint_orient[2])
+    # calculate the torques with PID
+    yaw_torque = cntrl_yaw.output(orient[0], setpoint_orient[0])
+    pitch_torque = cntrl_pitch.output(orient[1], setpoint_orient[1])
+    roll_torque = cntrl_roll.output(orient[2], setpoint_orient[2])
 
+    # net torques after subtracting drag
     netYaw = yaw_torque - Dt_yaw
     netPitch = pitch_torque - Dt_pitch
     netRoll = roll_torque - Dt_roll
 
-    acc_data[0] = netYaw/physics.I
-    acc_data[1] = netPitch/physics.I
-    acc_data[2] = netRoll/physics.I
+    # calculate angular acceleration with noise
+    acc_data = np.array([
+        (netYaw / physics.I) + np.random.normal(0, acc_noise_std),
+        (netPitch / physics.I) + np.random.normal(0, acc_noise_std),
+        (netRoll / physics.I) + np.random.normal(0, acc_noise_std)
+    ])
 
-    gyro_data[0] = acc_data[0] * dt
-    gyro_data[1] = acc_data[1] * dt
-    gyro_data[2] = acc_data[2] * dt
+    # calculate angular velocities with angular acceleration and noise
+    gyro_data = np.array([
+        (acc_data[0] * dt) + np.random.normal(0, gyro_noise_std),
+        (acc_data[1] * dt) + np.random.normal(0, gyro_noise_std),
+        (acc_data[2] * dt) + np.random.normal(0, gyro_noise_std)
+    ])
 
-    # Prediction and update
-    ekf.predict(gyro_data)
-    ekf.update(acc_data)
+    # update current orientation and convert to degrees
+    orient += (180 * gyro_data * dt/np.pi)
 
-    yaw = 180 * (gyro_data[0] * dt)/np.pi
-    pitch = 180 * (gyro_data[1] * dt)/np.pi
-    roll = 180 * (gyro_data[2] * dt)/np.pi
+    # kalman filter prediction and update step
+    lkf.predict(gyro_data)
+    lkf.update(orient)
 
-    # # Convert to quaternions
-    # rot = Rotation.from_euler('xyz', [yaw, pitch, roll], degrees=True)
-    # ekf.x = rot.as_quat()
+    # get estimated orientation from the kalman filter
+    orient = lkf.get_orientation()
 
-    # # Get orientation after filter is applied
-    # quaternion = ekf.get_orientation()
-
-    # # Get euler angles again
-    # euler_angles = ekf.quat_to_eul(quaternion[0], quaternion[1], quaternion[2], quaternion[3])
-
-    euler_angles = np.array([yaw, pitch, roll])
-
-    # Update state
-    init_orient += euler_angles
-
-    pos_yaw.append(init_orient[0])
-    pos_pitch.append(init_orient[1])
-    pos_roll.append(init_orient[2])
+    # store the estimated orientation values
+    pos_yaw.append(orient[0])
+    pos_pitch.append(orient[1])
+    pos_roll.append(orient[2])
 
 figure, axis = plt.subplots(2,3)
 axis[0,0].plot(np.array(range(len(x_state))), x_state)
