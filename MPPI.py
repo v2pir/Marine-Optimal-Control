@@ -102,7 +102,7 @@ class model:
         y_v += y_force/self.mass * time
         z_v += z_force/self.mass * time
 
-        return np.array([x_dist, y_dist, z_dist]), np.array([0, 0, 0])
+        return np.array([x_dist, y_dist, z_dist]), np.array([x_v, y_v, z_v])
     
     def get_state_dim(self):
         return 3
@@ -147,10 +147,10 @@ class MPPI:
         '''
         return np.random.uniform(1500-400*max_power,1500+400*max_power, (self.num_rollouts,self.horizon,self.control_dim))
     
-    def next_state(self, cntrl, current):
+    def next_state(self, cntrl, current, vel):
         thrusts = self.model.thrust_force(cntrl) # calculate the power given to each thruster
-        movements, self.vel = self.model.movement(thrusts, self.time_step, self.vel) # model the movement given the thrusts
-        return np.add(current, movements)
+        movements, new_vel = self.model.movement(thrusts, self.time_step, vel) # model the movement given the thrusts
+        return np.add(current, movements), new_vel
         
     def rollout(self, x0, U):
         '''
@@ -160,10 +160,11 @@ class MPPI:
 
         states = []
         for traj in U:
+            vel = self.vel.copy()
             curr_state = x0
             state_array = []
             for move in traj:
-                curr_state = self.next_state(move, curr_state)
+                curr_state, vel = self.next_state(move, curr_state, vel)
                 state_array.append(curr_state.tolist())
             states.append(state_array)
 
@@ -187,38 +188,31 @@ class MPPI:
         Input: Initial State
         Output: Optimized control sequence of shape (H, U) 
         '''
-
-        '''with weights'''
-        # self.control_mu = np.zeros(self.control_dim)
-        # U = self.sample_controls(0.6)
-        # states = self.rollout(initial, U)
-        # total_cost = 0
-        # for state in states:
-        #     total_cost += np.exp(self.lamb * -self.cost(state, setpoint))
-
-        # weights = []
-        # for trajectory in states:
-        #     tr_cost = np.nan_to_num(np.exp(self.lamb * -self.cost(trajectory, setpoint)))
-        #     weights.append(np.nan_to_num(tr_cost/total_cost))
-
-        # weights = np.array(weights)
-
-        # for t in range(self.num_rollouts):
-        #     self.control_mu += weights[t] * U[t, 0]
-
-        # return self.control_mu
-
-        '''without weights'''
-        self.control_mu = np.zeros(self.control_dim)
         U = self.sample_controls(0.6)
-        least_cost = sys.maxsize
         states = self.rollout(initial, U)
-        for state in range(len(states)):
-            cost = self.cost(states[state], setpoint)
-            if cost < least_cost:
-                least_cost = cost
-                self.control_mu = U[state][0]
+
+        costs = np.array([self.cost(traj, setpoint) for traj in states])
+        beta = np.min(costs)
+        weights = np.exp(-(costs - beta) / self.lamb)
+        weights /= np.sum(weights)
+
+        self.control_mu = np.zeros(self.control_dim)
+        for t in range(self.num_rollouts):
+            self.control_mu += weights[t] * U[t, 0]
 
         return self.control_mu
+
+        '''without weights'''
+        # self.control_mu = np.zeros(self.control_dim)
+        # U = self.sample_controls(0.6)
+        # least_cost = sys.maxsize
+        # states = self.rollout(initial, U)
+        # for state in range(len(states)):
+        #     cost = self.cost(states[state], setpoint)
+        #     if cost < least_cost:
+        #         least_cost = cost
+        #         self.control_mu = U[state][0]
+
+        # return self.control_mu
 
         # Compute MPPI update with exponential utility np.exp(costs)
